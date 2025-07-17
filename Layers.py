@@ -59,43 +59,6 @@ class VecInt(nn.Module):
             vec = vec + self.transformer(vec, vec)
         return vec
     
-class LableSpatialTransformer():
-
-    def __init__(self, inshape):
-        self.inshape = inshape
-        self.transformer = SpatialTransformer(self.inshape, mode='nearest')
-
-    def transforms(self, label, flow):
-        '''
-        
-        '''
-        if not isinstance(label, list):
-            raise ValueError('label should be a list.')
-        
-        if len(flow.shape) == 5:
-            t,s,c,h,w = flow.shape
-            
-            warping = []
-            for lb in label:
-                b = lb.shape[0]
-                temporal = []
-                init_lb = lb.reshape(t, b*s, 1, h, w)
-
-                for i in range(t):
-                    temporal.append(self.transformer(init_lb[i], flow[i]))
-                warping.append(torch.stack(temporal, dim=0).squeeze())
-
-        elif len(label[0].shape) == 4:
-            n,c,h,w = flow.shape
-
-            warping = []
-            for lb in label:
-                b = lb.shape[0]
-                lb = lb.reshape(b*n, 1, h, w)
-                warping.append(self.transformer(lb, flow).squeeze())
-
-        return warping
-
 class NCC(torch.nn.Module):
     """
     local (over window) normalized cross correlation
@@ -207,7 +170,7 @@ class VariationalAutoEncoder(nn.Module):
     
     def udec(self, input, modes=None):
 
-        x = self.unet('decoder', input, modes=modes)
+        x = self.unet('decoder', input, modes=None)
 
         return x
     
@@ -220,7 +183,6 @@ class VariationalAutoEncoder(nn.Module):
         else:
             raise NotImplementedError
         
-
 class Unet(nn.Module):
     def __init__(self, indim, hiddim, appdim=None, nb_features=None, nb_levels=None, feat_mult=1):
         super().__init__()
@@ -247,7 +209,6 @@ class Unet(nn.Module):
         else:
             self.enc_nf, self.dec_nf = nb_features  
 
-        self.upsample = nn.Upsample(scale_factor=2, mode='trilinear')
         self.kernal_size = [3, 3, 3, 3]
         self.padding = [1, 1, 1, 1]
         self.stride = [2, 2, 2, 2]
@@ -303,10 +264,43 @@ class Unet(nn.Module):
         else:
             raise NotImplementedError
 
+class motion_block(nn.Module):
+    def __init__(self, input_nc):   # 32->128
+        super(motion_block, self).__init__()                # 16 32 64 128 
+        self.enc_nf = [32, 64, 128, 256]
+        self.dec_nf = [256, 128, 64, 32]
+        self.extra_nf = [16, 4]
+
+        self.downarm = nn.ModuleList()
+        self.uparm = nn.ModuleList()
+        # self.downarm.append(ConvBlock(2, input_nc, self.enc_nf[0], 7, stride=1, padding=3))
+        prev_nf = input_nc
+        for i in range(len(self.enc_nf)):
+            self.downarm.append(MBblock(prev_nf, self.enc_nf[i], stride=2))  
+            prev_nf = self.enc_nf[i]      
+        for i in range(len(self.dec_nf)-1):
+            self.uparm.append(MBupblock(self.dec_nf[i], self.dec_nf[i]+self.dec_nf[i+1], self.dec_nf[i+1]))   
+        self.uparm.append(MBupblock(self.dec_nf[i+1], self.dec_nf[i+1]+input_nc, self.dec_nf[i+1]))
+
+        self.extras = nn.ModuleList()
+        prev_nf = self.dec_nf[-1]
+        for nf in self.extra_nf:
+            self.extras.append(MBkeepblock(prev_nf, nf))
+            prev_nf = nf   
+        
+
+    def forward(self, x):
+        x_enc = [x] 
+        for layer in self.downarm:
+            x = layer(x)
+            x_enc.append(x)
+        for i, layer in enumerate(self.uparm):
+            x = layer(x, x_enc[-i-2])
+        for layer in self.extras:
+            x = layer(x)
+        return x
+
 class ConvBlock(nn.Module):
-    """
-    Specific convolutional block followed by leakyrelu for unet.
-    """
 
     def __init__(self, ndims, in_channels, out_channels, kernel_size, stride, padding):
         super().__init__()
@@ -322,3 +316,41 @@ class ConvBlock(nn.Module):
         out = self.batchnorm(out)
         out = self.activation(out)
         return out
+    
+class MBblock(nn.Module):
+    def __init__(self, in_dim, out_dim, stride=1):
+        super(MBblock, self).__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_dim, out_dim, kernel_size=3, stride=stride, padding=1, bias=True),
+            nn.BatchNorm2d(out_dim),    #
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(out_dim),    #
+            nn.LeakyReLU(0.2, True),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+    
+class MBupblock(nn.Module):
+    def __init__(self, in_ch, cat_ch, out_ch):
+        super(MBupblock, self).__init__()
+        self.upconv = nn.ConvTranspose2d(in_ch, in_ch, 3, padding=1, stride=2, output_padding=1)
+        self.block = MBblock(cat_ch, out_ch)
+
+    def forward(self, x1, x2):
+        upconved = self.upconv(x1)
+        x = torch.cat([x2, upconved], dim=1)
+        x = self.block(x)
+        return x
+    
+class MBkeepblock(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super(MBkeepblock, self).__init__()
+        self.upconv = nn.ConvTranspose2d(in_ch, in_ch, 3, padding=1, stride=2, output_padding=1)
+        self.block = MBblock(in_ch, out_ch)
+
+    def forward(self, x):
+        x = self.upconv(x)
+        x = self.block(x)
+        return x
