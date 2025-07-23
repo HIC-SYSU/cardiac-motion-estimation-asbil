@@ -37,13 +37,7 @@ class data_augmentation():
             return images
 
 class VOSDataset(Dataset):
-    '''
-    name: anzhen, shengyi, tag, camus
-    mode: train, val
-    dim: 2D, 3D
-    view: A2C, A4C
-    augmentation: True, False
-    '''
+
 
     def __init__(self, augmentation=False):
         
@@ -55,9 +49,6 @@ class VOSDataset(Dataset):
 
         self.Img_pth = [r'/data/images'] 
         self.lbs_pth = [r'/data/labels']
-        # self.resize_transformIM = transforms.Resize((128, 128), interpolation=InterpolationMode.BILINEAR)
-        # self.resize_transformLB = transforms.Resize((128, 128), interpolation=InterpolationMode.NEAREST)
-
         self.patients = []
         for pth in self.lbs_pth:
             self.patients += sorted(os.listdir(pth))
@@ -85,10 +76,6 @@ class VOSDataset(Dataset):
         cmax = torch.max(img_np)
         img_np = (img_np - cmin) / (cmax- cmin + 0.0001)
 
-        # meanv = torch.mean(img_np, dim=(1,2))
-        # meanv = meanv.view(-1,1,1)
-        # img_np = img_np / (2 * meanv)
-        # img_np = torch.clamp(img_np, -1, 1)
         return img_np
 
     def split_masks(self, masks):
